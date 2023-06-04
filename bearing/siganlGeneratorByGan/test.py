@@ -9,6 +9,7 @@ from keras import Input
 from keras.layers import Dense, LSTM
 from matplotlib import pyplot
 import matplotlib.pyplot as plt
+from sklearn.metrics import mean_squared_error
 
 LENGTH_INPUT = 300
 POPULATION_SIZE = 50
@@ -47,7 +48,7 @@ def define_gan(generator, discriminator):
     return model
 
 # generate n real samples with class labels
-def generate_real_samples(n):
+def generate_faulty_samples(n, fault_type):
     amps = np.arange(0.1, 10, 0.1)
     bias = np.arange(0.1, 10, 0.1)
     freqs = np.linspace(1, 2, 1000)
@@ -55,13 +56,25 @@ def generate_real_samples(n):
     X1 = []
     for x in range(n):
         noise = np.random.normal(size=len(X2))
+        
+        if fault_type == 'ball':
+            fault_frequency = 500
+        elif fault_type == 'outer_race':
+            fault_frequency = 1000
+        elif fault_type == 'inner_race':
+            fault_frequency = 1500
+        elif fault_type == 'roller':
+            fault_frequency = 2000
+        else:
+            raise ValueError("Invalid fault type. Supported types: 'ball', 'outer_race', 'inner_race', 'roller'")
+        
         X1.append(
-            np.random.choice(amps) * np.sin(X2 * np.random.choice(freqs)) + np.random.choice(bias) 
-+ 0.3 * noise)
+            np.random.choice(amps) * np.sin(X2 * fault_frequency) + np.random.choice(bias) + 0.3 * noise)
     X1 = np.array(X1).reshape(n, LENGTH_INPUT)
     # generate class labels
-    y = ones((n, 1))
+    y = np.ones((n, 1))
     return X1, y
+
 
 # generate points in latent space as input for the generator
 def generate_latent_points(latent_dim, n):
@@ -82,25 +95,26 @@ def generate_fake_samples(generator, latent_dim, n):
     return X, y
 
 # calculate the fitness of each chromosome
-def calculate_fitness(chromosomes, generator, discriminator):
+def calculate_fitness(chromosomes, generator, discriminator, generation):
     fitness_scores = []
     for chromosome in chromosomes:
         # Set the generator parameters
         generator.set_weights(chromosome)
         # Train the GAN with the current generator parameters
-        train(generator, discriminator, gan_model, latent_dim, n_epochs=1000, n_batch=128, 
-n_eval=200)
+        train(generator, discriminator, gan_model, latent_dim, generation,  n_epochs=1000, n_batch=128, n_eval=200)
         # Calculate the fitness score based on GAN's performance
         fitness = evaluate_gan_performance(generator)
         fitness_scores.append(fitness)
     return fitness_scores
 
-# evaluate the performance of the GAN
+
 def evaluate_gan_performance(generator):
     # Generate fake samples
-    fake_samples, _ = generate_fake_samples(generator, latent_dim, 1000)
-    # Measure the performance (e.g., MSE, accuracy, etc.)
-    performance = ...
+    fake_samples, _ = generate_fake_samples(generator, latent_dim, 1000)  # 수정된 부분
+    # Generate real samples for comparison
+    real_samples, _ = generate_faulty_samples(1000, 'ball')  # 수정된 부분
+    # Measure the performance using MSE
+    performance = mean_squared_error(real_samples, fake_samples)
     return performance
 
 # perform tournament selection to choose parents for crossover
@@ -138,14 +152,15 @@ def mutate(offspring, mutation_rate):
             mutated_offspring.append(chromosome)
     return mutated_offspring
 
+  
 # train the generator and discriminator
-def train(g_model, d_model, gan_model, latent_dim, n_epochs=10000, n_batch=128, n_eval=200):
+def train(g_model, d_model, gan_model, latent_dim, cur_generation, n_epochs=10000, n_batch=128, n_eval=200):
     # determine half the size of one batch, for updating the discriminator
     half_batch = int(n_batch / 2)
     # manually enumerate epochs
     for i in range(n_epochs):
         # prepare real samples
-        x_real, y_real = generate_real_samples(half_batch)
+        x_real, y_real = generate_faulty_samples(half_batch, 'ball')
         # prepare fake examples
         x_fake, y_fake = generate_fake_samples(g_model, latent_dim, half_batch)
         # update discriminator
@@ -159,14 +174,16 @@ def train(g_model, d_model, gan_model, latent_dim, n_epochs=10000, n_batch=128, 
         gan_model.train_on_batch(x_gan, y_gan)
         # evaluate the model every n_eval epochs
         if (i+1) % n_eval == 0:
-            plt.title('Number of epochs = %i'%(i+1))
-            pred_data = generate_fake_samples(generator,latent_dim,latent_dim)[0]
-            real_data  = generate_real_samples(latent_dim)[0]
-            plt.plot(pred_data[0],'.',label='Random Fake Sample',color='firebrick')
-            plt.plot(real_data[0],'.',label = 'Random Real Sample',color='navy')
+            plt.title('Number of epochs = %i' % (i+1))
+            pred_data = generate_fake_samples(g_model, latent_dim, latent_dim)[0]  # 수정된 부분
+            real_data = generate_faulty_samples(latent_dim, 'ball')[0]  # 수정된 부분
+            plt.plot(pred_data[0], '-', label='Random Fake Sample', color='firebrick')
+            plt.plot(real_data[0], '-', label='Random Real Sample', color='navy')
             plt.legend(fontsize=10)
-            plt.savefig(f'img/graph_{i+1}.png')
+            plt.savefig(f'img/ball-graph_g-{cur_generation}_epoch-{i+1}.png')
             plt.close()
+
+
 
 # size of the latent space
 latent_dim = 3
@@ -183,7 +200,7 @@ population = [generator.get_weights() for _ in range(POPULATION_SIZE)]
 # evolution loop
 for generation in range(MAX_GENERATIONS):
     # calculate fitness scores
-    fitness_scores = calculate_fitness(population, generator, discriminator)
+    fitness_scores = calculate_fitness(population, generator, discriminator, generation)
     # perform tournament selection to choose parents
     parents = tournament_selection(population, fitness_scores, tournament_size=5)
     # perform crossover to create offspring
@@ -192,5 +209,8 @@ for generation in range(MAX_GENERATIONS):
     mutated_offspring = mutate(offspring, mutation_rate=0.1)
     # replace the population with the new generation (offspring + mutated offspring)
     population = offspring + mutated_offspring
-    # Print generation information
+
     print(f"Generation: {generation+1}")
+
+    # train the generator and discriminator with the current generation information
+    train(generator, discriminator, gan_model, latent_dim, cur_generation=generation+1, n_epochs=1000, n_batch=128, n_eval=200)
