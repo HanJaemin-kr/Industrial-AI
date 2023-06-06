@@ -102,6 +102,8 @@ def generate_fake_samples(generator, latent_dim, n):
 def calculate_fitness(chromosomes, generator, discriminator, generation):
     fitness_scores = []
     for chromosome in chromosomes:
+        generation += 1
+
         # Set the generator parameters
         generator.load_state_dict(chromosome)
         # Train the GAN with the current generator parameters
@@ -126,6 +128,7 @@ def evaluate_gan_performance(generator):
 
 # train the generator and discriminator
 def train(g_model, d_model, latent_dim, cur_generation, n_epochs=10000, n_batch=128, n_eval=200):
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     g_model.to(device)
     d_model.to(device)
@@ -195,7 +198,8 @@ def train(g_model, d_model, latent_dim, cur_generation, n_epochs=10000, n_batch=
                 plt.legend(fontsize=10)
 
             plt.legend(fontsize=10)
-            plt.savefig(f'img/ball-graph_g-{cur_generation}_epoch-{i + 1}.png')
+            plt.tight_layout()
+            plt.savefig(f'img/ball-graph_g-{generation}_epoch-{i + 1}.png')
             plt.close()
 
 # perform turnament selection to choose parents for crossover
@@ -256,6 +260,7 @@ population = [generator.state_dict() for _ in range(POPULATION_SIZE)]
 
 # evolution loop
 for generation in range(MAX_GENERATIONS):
+    print(' == 에인 반복문에서 ',generation, '번째 실행 ===')
     # calculate fitness scores
     fitness_scores = calculate_fitness(population, generator, discriminator, generation)
     # perform tournament selection to choose parents
@@ -270,4 +275,4 @@ for generation in range(MAX_GENERATIONS):
     print(f"Generation: {generation + 1}")
 
     # train the generator and discriminator with the current generation information
-    train(generator, discriminator, latent_dim, cur_generation=generation + 1, n_epochs=1000, n_batch=128, n_eval=200)
+    train(generator, discriminator, latent_dim, MAX_GENERATIONS + 1, n_epochs=1000, n_batch=128, n_eval=200)
