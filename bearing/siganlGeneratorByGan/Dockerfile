@@ -1,4 +1,3 @@
-# Dockerfile
 # 기본 이미지 선택
 FROM python:3.8
 
@@ -9,8 +8,8 @@ WORKDIR /app
 COPY . /app
 
 # 필요한 라이브러리 설치
-RUN pip install --no-cache-dir numpy keras matplotlib tensorflow
-
+RUN pip install --no-cache-dir numpy keras matplotlib
+RUN pip install tensorflow-macos
+RUN pip install tensorflow-metal
 # Docker 컨테이너 실행 시 실행할 명령어
 CMD ["python", "test.py"]
-

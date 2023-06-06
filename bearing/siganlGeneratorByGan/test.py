@@ -1,51 +1,52 @@
-from numpy import hstack
+import torch
+import torch.nn as nn
+import torch.optim as optim
 import numpy as np
-from numpy import zeros
-from numpy import ones
-from numpy.random import rand
-from numpy.random import randn
-from keras.models import Sequential
-from keras import Input
-from keras.layers import Dense, LSTM
-from matplotlib import pyplot
 import matplotlib.pyplot as plt
+from scipy.fft import fft
 from sklearn.metrics import mean_squared_error
 
 LENGTH_INPUT = 300
 POPULATION_SIZE = 50
 MAX_GENERATIONS = 100
 
+
 # define the standalone discriminator model
-def define_discriminator(n_inputs=LENGTH_INPUT):
-    model = Sequential()
-    model.add(Dense(LENGTH_INPUT, activation='relu', input_dim=n_inputs))
-    model.add(Dense(250, activation='relu', input_dim=n_inputs))
-    model.add(Dense(100, activation='relu'))
-    model.add(Dense(1, activation='sigmoid'))
-    # compile model
-    model.compile(loss='binary_crossentropy', optimizer='adam', metrics=['accuracy'])
-    return model
+class Discriminator(nn.Module):
+    def __init__(self, n_inputs=LENGTH_INPUT):
+        super(Discriminator, self).__init__()
+        self.model = nn.Sequential(
+            nn.Linear(n_inputs, LENGTH_INPUT),
+            nn.ReLU(),
+            nn.Linear(LENGTH_INPUT, 250),
+            nn.ReLU(),
+            nn.Linear(250, 100),
+            nn.ReLU(),
+            nn.Linear(100, 1),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        return self.model(x)
+
 
 # define the standalone generator model
-def define_generator(latent_dim, n_outputs=LENGTH_INPUT):
-    model = Sequential()
-    model.add(Input(shape=(latent_dim, 1)))
-    model.add(LSTM(150))
-    model.add(Dense(LENGTH_INPUT, activation='linear'))
-    model.compile(loss='mean_absolute_error', optimizer='adam', metrics=['mean_absolute_error'])
+class Generator(nn.Module):
+    def __init__(self, input_size, output_size):
+        super(Generator, self).__init__()
+        self.model = nn.Sequential(
+            nn.Linear(input_size, 128),
+            nn.ReLU(),
+            nn.Linear(128, 256),
+            nn.ReLU(),
+            nn.Linear(256, 512),
+            nn.ReLU(),
+            nn.Linear(512, output_size),
+            nn.Tanh()
+        )
 
-    return model
-
-# define the combined generator and discriminator model, for updating the generator
-def define_gan(generator, discriminator):
-    # make weights in the discriminator not trainable
-    discriminator.trainable = False
-    # connect them
-    model = Sequential()
-    model.add(generator)
-    model.add(discriminator)
-    model.compile(loss='binary_crossentropy', optimizer='adam')
-    return model
+    def forward(self, x):
+        return self.model(x)
 
 # generate n real samples with class labels
 def generate_faulty_samples(n, fault_type):
@@ -56,7 +57,7 @@ def generate_faulty_samples(n, fault_type):
     X1 = []
     for x in range(n):
         noise = np.random.normal(size=len(X2))
-        
+
         if fault_type == 'ball':
             fault_frequency = 500
         elif fault_type == 'outer_race':
@@ -67,7 +68,7 @@ def generate_faulty_samples(n, fault_type):
             fault_frequency = 2000
         else:
             raise ValueError("Invalid fault type. Supported types: 'ball', 'outer_race', 'inner_race', 'roller'")
-        
+
         X1.append(
             np.random.choice(amps) * np.sin(X2 * fault_frequency) + np.random.choice(bias) + 0.3 * noise)
     X1 = np.array(X1).reshape(n, LENGTH_INPUT)
@@ -79,29 +80,32 @@ def generate_faulty_samples(n, fault_type):
 # generate points in latent space as input for the generator
 def generate_latent_points(latent_dim, n):
     # generate points in the latent space
-    x_input = randn(latent_dim * n)
+    x_input = np.random.randn(n, latent_dim)
     # reshape into a batch of inputs for the network
     x_input = x_input.reshape(n, latent_dim)
     return x_input
 
 # use the generator to generate n fake examples, with class labels
 def generate_fake_samples(generator, latent_dim, n):
-    # generate points in latent space
+    # Generate points in latent space
     x_input = generate_latent_points(latent_dim, n)
-    # predict outputs
-    X = generator.predict(x_input, verbose=0)
-    # create class labels
-    y = zeros((n, 1))
+    # Convert to PyTorch tensor
+    x_input = torch.from_numpy(x_input).float()
+    # Generate output
+    X = generator(x_input)
+    # Create fake labels
+    y = torch.zeros((n, 1))
     return X, y
+
 
 # calculate the fitness of each chromosome
 def calculate_fitness(chromosomes, generator, discriminator, generation):
     fitness_scores = []
     for chromosome in chromosomes:
         # Set the generator parameters
-        generator.set_weights(chromosome)
+        generator.load_state_dict(chromosome)
         # Train the GAN with the current generator parameters
-        train(generator, discriminator, gan_model, latent_dim, generation,  n_epochs=1000, n_batch=128, n_eval=200)
+        train(generator, discriminator, latent_dim, generation, n_epochs=1000, n_batch=128, n_eval=200)
         # Calculate the fitness score based on GAN's performance
         fitness = evaluate_gan_performance(generator)
         fitness_scores.append(fitness)
@@ -109,15 +113,92 @@ def calculate_fitness(chromosomes, generator, discriminator, generation):
 
 
 def evaluate_gan_performance(generator):
-    # Generate fake samples
-    fake_samples, _ = generate_fake_samples(generator, latent_dim, 1000)  # 수정된 부분
-    # Generate real samples for comparison
-    real_samples, _ = generate_faulty_samples(1000, 'ball')  # 수정된 부분
+    real_samples, _ = generate_faulty_samples(1000, 'ball')
+    real_samples = torch.from_numpy(real_samples).float()
+
+    fake_samples, _ = generate_fake_samples(generator, latent_dim, 1000)
+    fake_samples = fake_samples.detach().numpy()
+
     # Measure the performance using MSE
     performance = mean_squared_error(real_samples, fake_samples)
     return performance
 
-# perform tournament selection to choose parents for crossover
+
+# train the generator and discriminator
+def train(g_model, d_model, latent_dim, cur_generation, n_epochs=10000, n_batch=128, n_eval=200):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    g_model.to(device)
+    d_model.to(device)
+
+    # determine the size of one batch, for updating the discriminator
+    half_batch = int(n_batch / 2)
+    # define loss function and optimizers
+    adversarial_loss = nn.BCELoss()
+    d_optimizer = optim.Adam(d_model.parameters(), lr=0.0002)
+    g_optimizer = optim.Adam(g_model.parameters(), lr=0.0002)
+
+    # manually enumerate epochs
+    for i in range(n_epochs):
+        # train discriminator
+        for _ in range(2):
+            # prepare real samples
+            x_real, y_real = generate_faulty_samples(half_batch, 'ball')
+            real_samples = torch.Tensor(x_real).to(device)
+            real_labels = torch.Tensor(y_real).to(device)
+            # prepare fake examples
+            x_fake, y_fake = generate_fake_samples(g_model, latent_dim, half_batch)
+            fake_samples = torch.Tensor(x_fake).to(device)
+            fake_labels = torch.Tensor(y_fake).to(device)
+            # train discriminator
+            d_optimizer.zero_grad()
+            real_output = d_model(real_samples)
+            fake_output = d_model(fake_samples)
+            real_loss = adversarial_loss(real_output, real_labels[:half_batch])
+            fake_loss = adversarial_loss(fake_output, fake_labels[:half_batch])
+            d_loss = real_loss + fake_loss
+            d_loss.backward()
+            d_optimizer.step()
+
+        # train generator
+        g_optimizer.zero_grad()
+        gen_samples, _ = generate_fake_samples(g_model, latent_dim, n_batch)
+        gen_samples = torch.Tensor(gen_samples).to(device)
+        gan_output = d_model(gen_samples)
+        g_loss = adversarial_loss(gan_output[:half_batch], real_labels[:half_batch])
+        g_loss.backward()
+        g_optimizer.step()
+
+        # evaluate the model every n_eval epochs
+        if (i + 1) % n_eval == 0:
+            plt.figure(figsize=(12, 5))
+            plt.title('Number of epochs = %i' % (i + 1))
+            with torch.no_grad():
+                gen_samples, _ = generate_fake_samples(g_model, latent_dim, latent_dim)
+                real_samples, _ = generate_faulty_samples(latent_dim, 'ball')
+
+                real_samples_tensor = torch.Tensor(real_samples)  # numpy.ndarray를 torch.Tensor로 변환
+                fft_real_samples = torch.fft.fft(real_samples_tensor)
+
+                gen_samples_tensor = torch.Tensor(gen_samples)  # numpy.ndarray를 torch.Tensor로 변환
+                fft_fake_samples = torch.fft.fft(gen_samples_tensor)
+
+                plt.subplot(1, 2, 2)
+                plt.plot(np.abs(fft_fake_samples[0]), '-', label='Random Fake FFT Sample', color='firebrick')
+                plt.plot(np.abs(fft_real_samples[0]), '-', label='Random Real FFT Sample', color='navy')
+                plt.title('FFT signal')
+                plt.legend(fontsize=10)
+
+                plt.subplot(1, 2, 1)
+                plt.plot(gen_samples[0], '-', label='Random Fake Sample ', color='firebrick')
+                plt.plot(real_samples[0], '-', label='Random Real Sample ', color='navy')
+                plt.title('signal')
+                plt.legend(fontsize=10)
+
+            plt.legend(fontsize=10)
+            plt.savefig(f'img/ball-graph_g-{cur_generation}_epoch-{i + 1}.png')
+            plt.close()
+
+# perform turnament selection to choose parents for crossover
 def tournament_selection(chromosomes, fitness_scores, tournament_size):
     selected_parents = []
     for _ in range(len(chromosomes)):
@@ -136,7 +217,12 @@ def crossover(parents):
         parent1 = parents[i]
         parent2 = parents[i+1]
         # Perform crossover operation (e.g., blend crossover, uniform crossover, etc.)
-        child = ...
+        child = {}
+        for key in parent1.keys():
+            if np.random.rand() < 0.5:
+                child[key] = parent1[key]
+            else:
+                child[key] = parent2[key]
         offspring.append(child)
     return offspring
 
@@ -146,56 +232,27 @@ def mutate(offspring, mutation_rate):
     for chromosome in offspring:
         if np.random.random() < mutation_rate:
             # Perform mutation operation (e.g., random perturbation, flip bit, etc.)
-            mutated_chromosome = ...
+            mutated_chromosome = {}
+            for key in chromosome.keys():
+                mutated_chromosome[key] = chromosome[key] + np.random.normal(0, 0.1, size=chromosome[key].shape)
             mutated_offspring.append(mutated_chromosome)
         else:
             mutated_offspring.append(chromosome)
     return mutated_offspring
 
-  
-# train the generator and discriminator
-def train(g_model, d_model, gan_model, latent_dim, cur_generation, n_epochs=10000, n_batch=128, n_eval=200):
-    # determine half the size of one batch, for updating the discriminator
-    half_batch = int(n_batch / 2)
-    # manually enumerate epochs
-    for i in range(n_epochs):
-        # prepare real samples
-        x_real, y_real = generate_faulty_samples(half_batch, 'ball')
-        # prepare fake examples
-        x_fake, y_fake = generate_fake_samples(g_model, latent_dim, half_batch)
-        # update discriminator
-        d_model.train_on_batch(x_real, y_real)
-        d_model.train_on_batch(x_fake, y_fake)
-        # prepare points in latent space as input for the generator
-        x_gan = generate_latent_points(latent_dim, n_batch)
-        # create inverted labels for the fake samples
-        y_gan = ones((n_batch, 1))
-        # update the generator via the discriminator's error
-        gan_model.train_on_batch(x_gan, y_gan)
-        # evaluate the model every n_eval epochs
-        if (i+1) % n_eval == 0:
-            plt.title('Number of epochs = %i' % (i+1))
-            pred_data = generate_fake_samples(g_model, latent_dim, latent_dim)[0]  # 수정된 부분
-            real_data = generate_faulty_samples(latent_dim, 'ball')[0]  # 수정된 부분
-            plt.plot(pred_data[0], '-', label='Random Fake Sample', color='firebrick')
-            plt.plot(real_data[0], '-', label='Random Real Sample', color='navy')
-            plt.legend(fontsize=10)
-            plt.savefig(f'img/ball-graph_g-{cur_generation}_epoch-{i+1}.png')
-            plt.close()
+device = torch.device("mps")
+
+latent_dim = 100  # Update with your desired latent dimension
+output_size = LENGTH_INPUT
+generator = Generator(latent_dim, output_size)
+
+discriminator = Discriminator(n_inputs=LENGTH_INPUT)
 
 
-
-# size of the latent space
-latent_dim = 3
-# create the discriminator
-discriminator = define_discriminator()
-# create the generator
-generator = define_generator(latent_dim)
-# create the gan
-gan_model = define_gan(generator, discriminator)
+gan_model = nn.Sequential(generator, discriminator)
 
 # initialize the population
-population = [generator.get_weights() for _ in range(POPULATION_SIZE)]
+population = [generator.state_dict() for _ in range(POPULATION_SIZE)]
 
 # evolution loop
 for generation in range(MAX_GENERATIONS):
@@ -210,7 +267,7 @@ for generation in range(MAX_GENERATIONS):
     # replace the population with the new generation (offspring + mutated offspring)
     population = offspring + mutated_offspring
 
-    print(f"Generation: {generation+1}")
+    print(f"Generation: {generation + 1}")
 
     # train the generator and discriminator with the current generation information
-    train(generator, discriminator, gan_model, latent_dim, cur_generation=generation+1, n_epochs=1000, n_batch=128, n_eval=200)
+    train(generator, discriminator, latent_dim, cur_generation=generation + 1, n_epochs=1000, n_batch=128, n_eval=200)
