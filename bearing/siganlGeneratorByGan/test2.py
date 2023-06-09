@@ -99,19 +99,33 @@ def generate_fake_samples(generator, latent_dim, n):
     y = torch.zeros((n, 1))
     return X, y
 
-
 # calculate the fitness score for a set of chromosomes
 def calculate_fitness(chromosomes, gan_model, generation):
     fitness_scores = []
     for chromosome in chromosomes:
-        latent_dim = chromosome.shape[0]
+        latent_dim = chromosome.shape[3]  # Update to match the new chromosome shape
         generator, discriminator = gan_model
-        # Resize or reshape the chromosome to match the expected shape
-        resized_chromosome = np.tile(chromosome, (128, 1))
+
+        # Reshape the chromosome to match the expected shape
+        resized_chromosome = chromosome.reshape((1, 1, 1, latent_dim))
+
+        # Convert the chromosome to a PyTorch tensor
+        resized_chromosome = torch.from_numpy(resized_chromosome).float()
+
+        # Print the shape of the generator's weight tensor
+        print("Generator's weight shape before expansion:", generator.model[0].weight.shape)
+
+        # Expand the chromosome tensor to match the generator's weight shape
+        expanded_chromosome = resized_chromosome.expand(generator.model[0].weight.shape[0], -1, -1, -1)
+
+        # Create a new state dictionary and update generator's weights
+        state_dict = generator.state_dict()
+        state_dict['model.0.weight'] = expanded_chromosome.squeeze()
+        generator.load_state_dict(state_dict, strict=False)
 
         # Create a new state dictionary
         state_dict = {
-            'model.0.weight': torch.from_numpy(resized_chromosome).float(),
+            'model.0.weight': generator.model[0].weight,
             'model.0.bias': generator.model[0].bias,
             'model.2.weight': generator.model[2].weight,
             'model.2.bias': generator.model[2].bias,
@@ -122,13 +136,15 @@ def calculate_fitness(chromosomes, gan_model, generation):
         }
 
         # Update generator's weights
-        generator.load_state_dict(state_dict)
+        generator.load_state_dict(state_dict, strict=False)
 
         # Generate fake samples
         X, y = generate_fake_samples(generator, latent_dim, POPULATION_SIZE)
+
         # Evaluate GAN performance
         mse = evaluate_gan_performance(X, discriminator)
         fitness_scores.append(1 / mse)
+
     return fitness_scores
 
 
@@ -140,12 +156,10 @@ def evaluate_gan_performance(samples, discriminator):
     return mse
 
 
-# create a random sample of input noise for the generator
+# generate random sample of input noise for the generator
 def generate_noise(latent_dim, n):
-    x_input = np.random.randn(latent_dim * n)
-    x_input = x_input.reshape(n, latent_dim)
+    x_input = np.random.randn(n, 1, 1, latent_dim)
     return x_input
-
 
 # train the generator and discriminator
 def train(gan_model, n_epochs, n_eval=10):
@@ -198,7 +212,7 @@ def train(gan_model, n_epochs, n_eval=10):
             plt.close()
 
         # Select parents for reproduction
-        parents = np.random.choice(population, size=POPULATION_SIZE // 2, replace=False)
+        parents = np.random.choice(np.array(population).reshape(-1), size=POPULATION_SIZE // 2, replace=False)
         # Perform crossover
         offspring = []
         for parent in parents:
