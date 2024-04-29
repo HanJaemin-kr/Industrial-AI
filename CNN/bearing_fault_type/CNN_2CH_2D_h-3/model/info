@@ -1,0 +1,3 @@
+model1 : ep 100 ac : 90
+model2 : ep-300 batch-64 ac : 93
+model3 : ep-300 batch-32

@@ -1,0 +1,10 @@
+# Exclude .png and .pth files
+*.png
+*.pth
+*.pt
+*.xml
+*.iml
+*.pyc
+
+# Exclude toolbox file
+toolbox
